@@ -1,6 +1,7 @@
 namespace Chr.Avro.Serialization
 {
     using System;
+    using System.Collections.Generic;
     using System.Dynamic;
     using System.Linq;
     using System.Linq.Expressions;
@@ -77,39 +78,7 @@ namespace Chr.Avro.Serialization
 
                         if (GetRecordConstructor(underlying, recordSchema) is ConstructorInfo constructor)
                         {
-                            var parameters = constructor.GetParameters();
-
-                            // map constructor parameters to fields:
-                            var mapping = recordSchema.Fields
-                                .Select(field =>
-                                {
-                                    // there will be a match or we wouldn’t have made it this far:
-                                    var match = parameters.Single(parameter => IsMatch(field, parameter.Name));
-                                    var parameter = Expression.Parameter(match.ParameterType);
-
-                                    return (
-                                        Match: match,
-                                        Parameter: parameter,
-                                        Assignment: (Expression)Expression.Assign(
-                                            parameter,
-                                            DeserializerBuilder.BuildExpression(match.ParameterType, field.Type, context)));
-                                })
-                                .ToDictionary(r => r.Match, r => (r.Parameter, r.Assignment));
-
-                            expression = Expression.Block(
-                                mapping
-                                    .Select(d => d.Value.Parameter),
-                                mapping
-                                    .Select(d => d.Value.Assignment)
-                                    .Concat(new[]
-                                    {
-                                        Expression.New(
-                                            constructor,
-                                            parameters
-                                                .Select(parameter => mapping.ContainsKey(parameter)
-                                                    ? (Expression)mapping[parameter].Parameter
-                                                    : Expression.Constant(parameter.DefaultValue, parameter.ParameterType))),
-                                    }));
+                            expression = DeserializeIntoConstructorParameters(context, recordSchema, constructor);
                         }
                         else
                         {
@@ -119,57 +88,12 @@ namespace Chr.Avro.Serialization
                                     ? typeof(ExpandoObject)
                                     : underlying);
 
+                            Expression ctorExpression = Expression.Assign(value, Expression.New(value.Type));
+
                             expression = Expression.Block(
                                 new[] { value },
-                                new[] { (Expression)Expression.Assign(value, Expression.New(value.Type)) }
-                                    .Concat(recordSchema.Fields.Select(field =>
-                                    {
-                                        var match = GetMatch(field, underlying, MemberVisibility);
-
-                                        Expression expression;
-
-                                        if (match == null)
-                                        {
-                                            // always deserialize fields to advance the reader:
-                                            expression = DeserializerBuilder.BuildExpression(typeof(object), field.Type, context);
-
-                                            // fall back to a dynamic setter if the value supports it:
-                                            if (typeof(IDynamicMetaObjectProvider).IsAssignableFrom(value.Type))
-                                            {
-                                                var flags = CSharpBinderFlags.None;
-                                                var infos = new[] { CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.None, null) };
-                                                var binder = Binder.SetMember(flags, field.Name, value.Type, infos);
-                                                expression = Expression.Dynamic(binder, typeof(void), value, expression);
-                                            }
-                                        }
-                                        else
-                                        {
-                                            Expression inner;
-
-                                            try
-                                            {
-                                                inner = DeserializerBuilder.BuildExpression(
-                                                    match switch
-                                                    {
-                                                        FieldInfo fieldMatch => fieldMatch.FieldType,
-                                                        PropertyInfo propertyMatch => propertyMatch.PropertyType,
-                                                        MemberInfo unknown => throw new InvalidOperationException($"Record fields can only be mapped to fields and properties."),
-                                                    },
-                                                    field.Type,
-                                                    context);
-                                            }
-                                            catch (Exception exception)
-                                            {
-                                                throw new UnsupportedTypeException(type, $"The {match.Name} member on {type} could not be mapped to the {field.Name} field on {recordSchema.FullName}.", exception);
-                                            }
-
-                                            expression = Expression.Assign(
-                                                Expression.PropertyOrField(value, match.Name),
-                                                inner);
-                                        }
-
-                                        return expression;
-                                    }))
+                                new[] { ctorExpression }
+                                    .Concat(DeserializeToProperties(type, context, value, recordSchema.Fields))
                                     .Concat(new[] { Expression.ConvertChecked(value, type) }));
                         }
 
@@ -194,6 +118,103 @@ namespace Chr.Avro.Serialization
             {
                 return BinaryDeserializerBuilderCaseResult.FromException(new UnsupportedSchemaException(schema, $"{nameof(BinaryRecordDeserializerBuilderCase)} can only be applied to {nameof(RecordSchema)}s."));
             }
+
+            IEnumerable<Expression> DeserializeToProperties(
+                Type type,
+                BinaryDeserializerBuilderContext context,
+                ParameterExpression value,
+                IEnumerable<RecordField> fields)
+            {
+                var ret = fields.Select(field =>
+                {
+                    var match = GetMatch(field, type, MemberVisibility);
+
+                    Expression expression;
+
+                    if (match == null)
+                    {
+                        // always deserialize fields to advance the reader:
+                        expression = DeserializerBuilder.BuildExpression(typeof(object), field.Type, context);
+
+                        // fall back to a dynamic setter if the value supports it:
+                        if (typeof(IDynamicMetaObjectProvider).IsAssignableFrom(value.Type))
+                        {
+                            var flags = CSharpBinderFlags.None;
+                            var infos = new[] { CSharpArgumentInfo.Create(CSharpArgumentInfoFlags.None, null) };
+                            var binder = Binder.SetMember(flags, field.Name, value.Type, infos);
+                            expression = Expression.Dynamic(binder, typeof(void), value, expression);
+                        }
+                    }
+                    else
+                    {
+                        Expression inner;
+
+                        try
+                        {
+                            inner = DeserializerBuilder.BuildExpression(
+                                match switch
+                                {
+                                    FieldInfo fieldMatch => fieldMatch.FieldType,
+                                    PropertyInfo propertyMatch => propertyMatch.PropertyType,
+                                    MemberInfo unknown => throw new InvalidOperationException($"Record fields can only be mapped to fields and properties."),
+                                },
+                                field.Type,
+                                context);
+                        }
+                        catch (Exception exception)
+                        {
+                            throw new UnsupportedTypeException(type, $"The {match.Name} member on {type} could not be mapped to the {field.Name} field on {recordSchema.FullName}.", exception);
+                        }
+
+                        expression = Expression.Assign(
+                            Expression.PropertyOrField(value, match.Name),
+                            inner);
+                    }
+
+                    return expression;
+                });
+
+                return ret;
+            }
+        }
+
+        private Expression DeserializeIntoConstructorParameters(BinaryDeserializerBuilderContext context, RecordSchema recordSchema, ConstructorInfo constructor)
+        {
+            Expression expression;
+            var parameters = constructor.GetParameters();
+
+            // map constructor parameters to fields:
+            var mapping = recordSchema.Fields
+                .Select(field =>
+                {
+                    // there will be a match or we wouldn’t have made it this far:
+                    var match = parameters.Single(parameter => IsMatch(field, parameter.Name));
+                    var parameter = Expression.Parameter(match.ParameterType);
+
+                    return (
+                        Match: match,
+                        Parameter: parameter,
+                        Assignment: (Expression)Expression.Assign(
+                            parameter,
+                            DeserializerBuilder.BuildExpression(match.ParameterType, field.Type, context)));
+                })
+                .ToDictionary(r => r.Match, r => (r.Parameter, r.Assignment));
+
+            expression = Expression.Block(
+                mapping
+                    .Select(d => d.Value.Parameter),
+                mapping
+                    .Select(d => d.Value.Assignment)
+                    .Concat(new[]
+                    {
+                                        Expression.New(
+                                            constructor,
+                                            parameters
+                                                .Select(parameter => mapping.ContainsKey(parameter)
+                                                    ? (Expression)mapping[parameter].Parameter
+                                                    : Expression.Constant(parameter.DefaultValue, parameter.ParameterType))),
+                    }));
+            return expression;
         }
     }
 }
