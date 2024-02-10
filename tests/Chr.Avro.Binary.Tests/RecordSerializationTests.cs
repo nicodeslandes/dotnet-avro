@@ -2,6 +2,7 @@ namespace Chr.Avro.Serialization.Tests
 {
     using System;
     using System.Collections.Generic;
+    using System.ComponentModel.DataAnnotations;
     using System.IO;
     using Chr.Avro.Abstract;
     using Chr.Avro.Fixtures;
@@ -397,8 +398,17 @@ namespace Chr.Avro.Serialization.Tests
             }
 
             var reader = new BinaryReader(stream.ToArray());
+            var deserialized = deserialize(ref reader);
+            var expected = new WithoutEvenFields
+            {
+                First = value.First,
+                Third = value.Third,
+                Fifth = value.Fifth,
+                Seventh = value.Seventh,
+            };
 
-            Assert.Equal(value.Seventh, deserialize(ref reader).Seventh);
+            Assert.Equivalent(expected, deserialized);
+            Assert.Equal(value.Seventh, deserialized.Seventh);
         }
 
         [Fact]
@@ -591,6 +601,8 @@ namespace Chr.Avro.Serialization.Tests
 
             Assert.Equivalent(person, deserialized);
         }
+
+        // TODO: Add test where the class has multiple constructors; pick the one that matches more fields from the record
 
         private T SerializeAndDeserialize<T>(T item, RecordSchema schema)
         {
