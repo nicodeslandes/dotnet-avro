@@ -592,6 +592,8 @@ namespace Chr.Avro.Serialization.Tests
             Assert.Equivalent(person, deserialized);
         }
 
+        // TODO: Add test where the class has multiple constructors; pick the one that matches more fields from the record
+
         private T SerializeAndDeserialize<T>(T item, RecordSchema schema)
         {
             var deserialize = deserializerBuilder.BuildDelegate<T>(schema);
