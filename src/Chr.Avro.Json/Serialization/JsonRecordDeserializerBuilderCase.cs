@@ -309,36 +309,22 @@ namespace Chr.Avro.Serialization
                     Variable: x.Variable ?? throw new InvalidOperationException($"Variable expected for deserialization of {x.Member}")))
                 .ToArray();
 
-
-            //// map constructor parameters to fields:
-            //var mapping = recordSchema.Fields
-            //    .Select(field =>
-            //    {
-            //        // there will be a match or we wouldn’t have made it this far:
-            //        var match = parameters.Single(parameter => IsMatch(field, parameter.Name));
-            //        var parameter = Expression.Parameter(match.ParameterType);
-
-            //        return (
-            //            Field: field,
-            //            Match: match,
-            //            Parameter: parameter,
-            //            Assignment: (Expression)Expression.Block(
-            //                Expression.Call(context.Reader, read),
-            //                Expression.Assign(
-            //                    parameter,
-            //                    DeserializerBuilder.BuildExpression(match.ParameterType, field.Type, context))));
-            //    })
-            //    .ToDictionary(r => r.Match);
-
-
             var value = Expression.Parameter(
                 underlying.IsAssignableFrom(typeof(ExpandoObject))
                     ? typeof(ExpandoObject)
                     : underlying);
 
+            var memberAssignments =
+                memberMatches.Length == 0 ? (Expression)Expression.Empty()
+                    : Expression.Block(
+                        memberMatches.Select(m =>
+                            Expression.Assign(
+                                Expression.PropertyOrField(value, m.Member),
+                                m.Variable)));
+
             expression = Expression.Block(
                 mappings.Where(m => m.Variable != null).Select(m => m.Variable)
-                    .Concat(new[] { value }),
+                    .Concat(new[] { value })!,
                 Expression.IfThen(
                     Expression.NotEqual(
                         Expression.Property(context.Reader, tokenType),
@@ -378,11 +364,7 @@ namespace Chr.Avro.Serialization
                             ctorParameters
                             .Select(parameter => ctorParameterMatches.TryGetValue(parameter.Name, out var match) ? (Expression)match
                             : Expression.Constant(parameter.DefaultValue)))),
-                Expression.Block(
-                    memberMatches.Select(m =>
-                        Expression.Assign(
-                            Expression.PropertyOrField(value, m.Member),
-                            m.Variable))),
+                memberAssignments,
                 value);
 
             return expression;
