@@ -2,12 +2,10 @@ namespace Chr.Avro.Serialization
 {
     using System;
     using System.Collections.Generic;
-    using System.Collections.Immutable;
     using System.Dynamic;
     using System.Linq;
     using System.Linq.Expressions;
     using System.Reflection;
-    using System.Runtime.CompilerServices;
     using Chr.Avro.Abstract;
     using Microsoft.CSharp.RuntimeBinder;
 
@@ -96,7 +94,7 @@ namespace Chr.Avro.Serialization
                             expression = Expression.Block(
                                 new[] { value },
                                 new[] { ctorExpression }
-                                    .Concat(DeserializeToProperties(type, context, value, recordSchema.Fields))
+                                    .Concat(DeserializeToProperties(type, context, value, recordSchema.Fields, recordSchema))
                                     .Concat(new[] { Expression.ConvertChecked(value, type) }));
                         }
 
@@ -221,31 +219,41 @@ namespace Chr.Avro.Serialization
                             var variable = Expression.Variable(memberType, memberMatch.member.Name)
                                 ?? throw new InvalidOperationException($"Failed to create variable for {memberMatch.member}");
                             variables.Add(variable.Name, variable);
-                            return (IsMatch: true, ConstructorParameter: (ParameterInfo?)null, Variable: variable,
+                            return (IsMatch: true, Variable: (ParameterExpression?)variable, ConstructorParameter: (ParameterInfo?)null, Member: (MemberInfo?)memberMatch.member,
                             Assignment: (Expression)Expression.Assign(variable,
                                 DeserializerBuilder.BuildExpression(memberType, field.Type, context)));
                         }
 
-                        // No match
-                        return default;
+                        // No match: we still emit an expression so that the field gets deserialised
+                        return (IsMatch: false, Variable: null, ConstructorParameter: null, Member: null, Assignment: DeserializerBuilder.BuildExpression(typeof(object), field.Type, context));
                     }
 
                     var parameter = Expression.Parameter(constructorParameter.ParameterType);
                     return (
                         IsMatch: true,
-                        ConstructorParameter: constructorParameter,
                         Variable: parameter,
+                        ConstructorParameter: constructorParameter,
+                        Member: null,
                         Assignment: (Expression)Expression.Assign(
                             parameter,
                             DeserializerBuilder.BuildExpression(constructorParameter.ParameterType, field.Type, context)));
                 })
-                .Where(x => x.IsMatch)
-                .ToDictionary(r => r.Variable, r => (r.Variable, r.ConstructorParameter, r.Assignment));
+                .ToArray();
 
 
-            var ctorParameterMatches = mappings.Values
+            var ctorParameterMatches = mappings
                 .Where(x => x.ConstructorParameter != null)
-                .ToDictionary(x => x.ConstructorParameter.Name, x => x.Variable);
+                .ToDictionary(
+                    x => x.ConstructorParameter!.Name,
+                    x => x.Variable ?? throw new InvalidOperationException($"Variable expected for deserialization of ctor parameter {x.ConstructorParameter!.Name}"));
+
+            var memberMatches = mappings
+                .Where(x => x.Member != null)
+                .Select(x => (
+                    Member: x.Member!.Name,
+                    Variable: x.Variable ?? throw new InvalidOperationException($"Variable expected for deserialization of {x.Member}")))
+                .ToArray();
+
             // for properties deserialisation:
 
             //var param1 = <Deserialise>(field1)
@@ -254,18 +262,32 @@ namespace Chr.Avro.Serialization
             //mapped.Param1 = param1;
             //mapped.Param3 = param3;
 
+            // TODO: Can we support dynamic deserialization?
+            // support dynamic deserialization:
+            var value = Expression.Parameter(
+                underlying.IsAssignableFrom(typeof(ExpandoObject))
+                    ? typeof(ExpandoObject)
+                    : underlying);
+
             expression = Expression.Block(
-                mappings.Keys,
-                mappings.Values.Select(d => d.Assignment)
-                    .Concat(new[]
-                    {
+                mappings.Where(m => m.Variable != null).Select(m => m.Variable)
+                    .Concat(new[] { value }),
+                mappings.Select(d => d.Assignment)
+                .Concat(new[]
+                {
+                    Expression.Assign(
+                        value,
                         Expression.New(
                             constructor,
                             ctorParameters
-                                .Select(parameter => ctorParameterMatches.TryGetValue(parameter.Name, out var match) ? (Expression)match:
-                                    : Expression.Constant(parameter.DefaultValue))),
-                    })
-                    .Concat(DeserializeToProperties(type, context, members, value, recordSchema.Fields, recordSchema)));
+                            .Select(parameter => ctorParameterMatches.TryGetValue(parameter.Name, out var match) ? (Expression)match
+                            : Expression.Constant(parameter.DefaultValue)))),
+                })
+                .Concat(memberMatches.Select(m =>
+                    Expression.Assign(
+                        Expression.PropertyOrField(value, m.Member),
+                        m.Variable)))
+                .Concat(new[] { value }));
 
             return expression;
         }
