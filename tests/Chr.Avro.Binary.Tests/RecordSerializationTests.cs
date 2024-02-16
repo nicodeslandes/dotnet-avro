@@ -77,7 +77,8 @@ namespace Chr.Avro.Serialization.Tests
 
             var reader = new BinaryReader(stream.ToArray());
 
-            Assert.Equal(value.Seventh.ToString(), deserialize(ref reader).Seventh);
+            var deserialized = deserialize(ref reader);
+            Assert.Equal(value.Seventh.ToString(), deserialized.Seventh);
         }
 
         [Fact]
