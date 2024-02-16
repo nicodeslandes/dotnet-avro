@@ -76,13 +76,20 @@ namespace Chr.Avro.Serialization
                     {
                         Expression expression;
 
-                        if (!underlying.IsAssignableFrom(typeof(ExpandoObject))
-                            && GetRecordConstructor(underlying, recordSchema) is ConstructorInfo constructor)
+                        if (!underlying.IsAssignableFrom(typeof(ExpandoObject)) &&
+                            GetRecordConstructor(underlying, recordSchema) is ConstructorInfo constructor)
                         {
-                            expression = DeserializeIntoConstructorParameters(context, type, underlying, recordSchema, constructor);
+                            if (underlying.IsAssignableFrom(typeof(ExpandoObject)))
+                            {
+                                underlying = typeof(ExpandoObject);
+                                constructor = underlying.GetConstructor(Array.Empty<Type>())!;
+                            }
+
+                            expression = DeserializeIntoConstructorParameters(context, underlying, recordSchema, constructor);
                         }
                         else
                         {
+                            //throw new InvalidOperationException($"Unable to find a matching constructor for schema {recordSchema}");
                             // support dynamic deserialization:
                             var value = Expression.Parameter(
                                 underlying.IsAssignableFrom(typeof(ExpandoObject))
@@ -180,7 +187,7 @@ namespace Chr.Avro.Serialization
             };
         }
 
-        private Expression DeserializeIntoConstructorParameters(BinaryDeserializerBuilderContext context, Type type, Type underlying, RecordSchema recordSchema, ConstructorInfo constructor)
+        private Expression DeserializeIntoConstructorParameters(BinaryDeserializerBuilderContext context, Type type, RecordSchema recordSchema, ConstructorInfo constructor)
         {
             Expression expression;
             var ctorParameters = constructor.GetParameters();
@@ -192,7 +199,7 @@ namespace Chr.Avro.Serialization
             // Fields that have a match as a constructor parameter
             var matchedFields = recordSchema.Fields.Where(f => ctorParameters.Any(p => IsMatch(f, p.Name))).ToDictionary(f => f.Name);
 
-            var members = underlying.GetMembers(MemberVisibility);
+            var members = type.GetMembers(MemberVisibility);
 
             var fieldToDeserializeToProperties = recordSchema.Fields
                 .Where(f => !matchedFields.ContainsKey(f.Name))
@@ -208,7 +215,7 @@ namespace Chr.Avro.Serialization
                 {
                     // there might not be a match for a particular field, in which case it will be deserialized and then ignored
                     var constructorParameter = ctorParameters.SingleOrDefault(parameter => IsMatch(field, parameter.Name));
-                    MemberInfo matchedMember = null;
+
                     if (constructorParameter is null)
                     {
                         // No constructor parameter match for the field
@@ -224,7 +231,7 @@ namespace Chr.Avro.Serialization
                                 DeserializerBuilder.BuildExpression(memberType, field.Type, context)));
                         }
 
-                        // No match: we still emit an expression so that the field gets deserialised
+                        // No match: we still emit an expression so that the field gets deserialized
                         return (IsMatch: false, Variable: null, ConstructorParameter: null, Member: null, Assignment: DeserializerBuilder.BuildExpression(typeof(object), field.Type, context));
                     }
 
@@ -265,9 +272,9 @@ namespace Chr.Avro.Serialization
             // TODO: Can we support dynamic deserialization?
             // support dynamic deserialization:
             var value = Expression.Parameter(
-                underlying.IsAssignableFrom(typeof(ExpandoObject))
+                type.IsAssignableFrom(typeof(ExpandoObject))
                     ? typeof(ExpandoObject)
-                    : underlying);
+                    : type);
 
             expression = Expression.Block(
                 mappings.Where(m => m.Variable != null).Select(m => m.Variable)
