@@ -79,21 +79,27 @@ namespace Chr.Avro.Serialization
                         if (!underlying.IsAssignableFrom(typeof(ExpandoObject)) &&
                             GetRecordConstructor(underlying, recordSchema) is ConstructorInfo constructor)
                         {
-                            if (underlying.IsAssignableFrom(typeof(ExpandoObject)))
-                            {
-                                underlying = typeof(ExpandoObject);
-                                constructor = underlying.GetConstructor(Array.Empty<Type>())!;
-                            }
-
-                            expression = DeserializeIntoConstructorParameters(context, underlying, recordSchema, constructor);
+                            expression = DeserializeUsingConstructor(context, underlying, recordSchema, constructor);
                         }
                         else
                         {
+                            // We couldn't find a constructor to use
+                            // Simply use the default constructor, and deserialize into public members
+
                             // support dynamic deserialization:
-                            var value = Expression.Parameter(
-                                underlying.IsAssignableFrom(typeof(ExpandoObject))
+                            var deserializedType = underlying.IsAssignableFrom(typeof(ExpandoObject))
                                     ? typeof(ExpandoObject)
-                                    : underlying);
+                                    : underlying;
+
+                            // Check we do have a default constructor
+                            if (deserializedType.GetConstructor(Array.Empty<Type>()) is null)
+                            {
+                                var error = $"Unable to map schema {schema} to type {underlying} as it doesn't have " +
+                                    "a default constructor, and no compatible constructor could be found.";
+                                throw new UnsupportedTypeException(underlying, error);
+                            }
+
+                            var value = Expression.Parameter(deserializedType);
 
                             Expression ctorExpression = Expression.Assign(value, Expression.New(value.Type));
 
@@ -186,33 +192,39 @@ namespace Chr.Avro.Serialization
             return ret;
         }
 
-        private Expression DeserializeIntoConstructorParameters(BinaryDeserializerBuilderContext context, Type type, RecordSchema recordSchema, ConstructorInfo constructor)
+        private Expression DeserializeUsingConstructor(
+            BinaryDeserializerBuilderContext context,
+            Type type,
+            RecordSchema recordSchema,
+            ConstructorInfo constructor)
         {
             Expression expression;
             var ctorParameters = constructor.GetParameters();
 
             // Constructor is a match
-            // All ctor parameters either has a matching record field, or a default value
+            // All ctor parameters either have a matching record field, or a default value
             // But some record fields might not match any ctor parameter
 
             // Fields that have a match as a constructor parameter
-            var matchedFields = recordSchema.Fields.Where(f => ctorParameters.Any(p => IsMatch(f, p.Name!))).ToDictionary(f => f.Name);
+            var fieldsMatchedToConstructorParam = recordSchema.Fields
+                .Where(f => ctorParameters.Any(p => IsMatch(f, p.Name!)))
+                .ToDictionary(f => f.Name);
 
             var members = type.GetMembers(MemberVisibility);
 
             var fieldToDeserializeToProperties = recordSchema.Fields
-                .Where(f => !matchedFields.ContainsKey(f.Name))
+                .Where(f => !fieldsMatchedToConstructorParam.ContainsKey(f.Name))
                 .Select(f => (field: f, member: members.FirstOrDefault(m => IsMatch(f, m))))
                 .Where(x => x.member is not null)
                 .ToDictionary(x => x.field.Name);
 
             var variables = new Dictionary<string, ParameterExpression>();
 
-            // map fields to either a constructor parameter or a writable member
+            // Map fields to either a constructor parameter or a writable member
             var mappings = recordSchema.Fields
                 .Select(field =>
                 {
-                    // there might not be a match for a particular field, in which case it will be deserialized and then ignored
+                    // There might not be a match for a particular field, in which case it will be deserialized and then ignored
                     var constructorParameter = ctorParameters.SingleOrDefault(parameter => IsMatch(field, parameter.Name!));
 
                     if (constructorParameter is null)
@@ -225,8 +237,12 @@ namespace Chr.Avro.Serialization
                             var variable = Expression.Variable(memberType, memberMatch.member!.Name)
                                 ?? throw new InvalidOperationException($"Failed to create variable for {memberMatch.member}");
                             variables.Add(variable.Name!, variable);
-                            return (IsMatch: true, Variable: (ParameterExpression?)variable, ConstructorParameter: (ParameterInfo?)null, Member: (MemberInfo?)memberMatch.member,
-                            Assignment: (Expression)Expression.Assign(variable, DeserializerBuilder.BuildExpression(memberType, field.Type, context)));
+                            return (
+                                IsMatch: true,
+                                Variable: (ParameterExpression?)variable,
+                                ConstructorParameter: (ParameterInfo?)null,
+                                Member: (MemberInfo?)memberMatch.member,
+                                Assignment: (Expression)Expression.Assign(variable, DeserializerBuilder.BuildExpression(memberType, field.Type, context)));
                         }
 
                         // No match: we still emit an expression so that the field gets deserialized
@@ -258,11 +274,7 @@ namespace Chr.Avro.Serialization
                     Variable: x.Variable ?? throw new InvalidOperationException($"Variable expected for deserialization of {x.Member}")))
                 .ToArray();
 
-            // support dynamic deserialization:
-            var value = Expression.Parameter(
-                type.IsAssignableFrom(typeof(ExpandoObject))
-                    ? typeof(ExpandoObject)
-                    : type);
+            var value = Expression.Parameter(type);
 
             expression = Expression.Block(
                 mappings.Where(m => m.Variable != null).Select(m => m.Variable!)
