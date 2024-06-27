@@ -293,8 +293,6 @@ namespace Chr.Avro.Serialization.Tests
             var t = textReader.ReadToEnd();
 
             var reader = new Utf8JsonReader(stream.ToArray());
-            
-
             var with = deserialize(ref reader);
 
             Assert.Null(with.Second);
