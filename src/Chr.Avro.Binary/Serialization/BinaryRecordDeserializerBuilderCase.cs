@@ -284,7 +284,7 @@ namespace Chr.Avro.Serialization
                                 constructor,
                                 ctorParameters
                                     .Select(parameter => ctorParameterMatches.TryGetValue(parameter.Name!, out var match) ? (Expression)match
-                                        : Expression.Constant(parameter.DefaultValue)))),
+                                        : Expression.Constant(parameter.DefaultValue, parameter.ParameterType)))),
                     })
                     .Concat(memberMatches.Select(m =>
                         Expression.Assign(
