@@ -7,6 +7,7 @@ namespace Chr.Avro.Serialization.Tests
     using Chr.Avro.Abstract;
     using Chr.Avro.Fixtures;
     using Xunit;
+    using Xunit.Sdk;
 
     public class RecordSerializationTests
     {
@@ -288,8 +289,10 @@ namespace Chr.Avro.Serialization.Tests
                 serialize(value, new Utf8JsonWriter(stream));
             }
 
-            var reader = new Utf8JsonReader(stream.ToArray());
+            var textReader = new StreamReader(new MemoryStream(stream.ToArray()));
+            var t = textReader.ReadToEnd();
 
+            var reader = new Utf8JsonReader(stream.ToArray());
             var with = deserialize(ref reader);
 
             Assert.Null(with.Second);
