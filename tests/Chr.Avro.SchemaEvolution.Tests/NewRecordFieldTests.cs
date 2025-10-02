@@ -132,7 +132,7 @@ public class NewRecordFieldTests
         // Player is missing "score", and no default value exists in the schema
         var exception = Assert.Throws<UnsupportedTypeException>(() => SerializerBuilder.BuildDelegate<Player>(avroSchema));
         var typeName = typeof(Player).FullName;
-        Assert.Equal($"{typeName} does not have a field or property that matches 'age' field on MyRecord.", exception.Message);
+        Assert.Equal($"{typeName} does not have a field or property that matches the 'score' field on MyRecord.", exception.Message);
     }
 
     [Fact]
