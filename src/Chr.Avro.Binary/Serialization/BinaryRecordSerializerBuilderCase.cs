@@ -95,7 +95,7 @@ namespace Chr.Avro.Serialization
                                         }
                                         else
                                         {
-                                            throw new UnsupportedTypeException(type, $"{type} does not have a field or property that matches the '{field.Name}' field on {recordSchema.FullName}.");
+                                            throw new UnsupportedTypeException(type, $"{type} does not have a field or property that matches the {field.Name} field on {recordSchema.FullName}.");
                                         }
                                     }
                                 }
@@ -110,7 +110,7 @@ namespace Chr.Avro.Serialization
                                 }
                                 catch (Exception exception)
                                 {
-                                    throw new UnsupportedTypeException(type, $"{(match is null ? "A" : $"The {match.Name}")} member on {type} could not be mapped to the '{field.Name}' field on {recordSchema.FullName}.", exception);
+                                    throw new UnsupportedTypeException(type, $"{(match is null ? "A" : $"The {match.Name}")} member on {type} could not be mapped to the {field.Name} field on {recordSchema.FullName}.", exception);
                                 }
                             })
                             .ToList();
